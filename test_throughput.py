@@ -28,10 +28,10 @@ word_idx = 0
 
 session_num = 20000
 
-model_path = "/root/dynamo/Qwen2-7B-Instruct"
+model_path = "/root/models/Qwen2-7B-Instruct"
 model_name = "Qwen2-7B-Instruct"
-model_path = "/root/models/Qwen3-30B-A3B-FP8"
-model_name = "Qwen3-30B-A3B-FP8"
+# model_path = "/root/models/Qwen3-30B-A3B-FP8"
+# model_name = "Qwen3-30B-A3B-FP8"
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 max_tokens = 15
 
@@ -43,14 +43,33 @@ headers = {
 data = {
     "model": model_name,
     "messages": [
-        {"role": "user", "content": "如何复现deepseek r1中的知识蒸馏" * 55} # 11 * 55 = 605 tokens
+        {"role": "user", "content": "如何复现deepseek r1中的知识蒸馏" * 32} # 11 * 55 = 605 tokens
     ],
     "max_tokens": max_tokens
 }
+is_tensorrt_llm = True
+if is_tensorrt_llm:
+    url = "http://localhost:8000/v2/models/tensorrt_llm_bls/generate"
+    data = {
+        "text_input": "如何复现deepseek r1中的知识蒸馏" * 55,
+        "max_tokens": max_tokens
+    }
+session = requests.Session()
 
 # Function to send a request and return the token counts
 def send_request(results, lock):
-    t1 = time.time()
+    if is_tensorrt_llm:
+        t1 = time.time()
+        response = session.post(url, headers=headers, json=data)
+        t2 = time.time()
+        response_json = response.json()
+        prompt = data["text_input"]
+        input_tokens = len(tokenizer.convert_tokens_to_ids(tokenizer.tokenize(prompt)))
+        out_text = response_json.get("text_output", "")
+        output_tokens = len(tokenizer.convert_tokens_to_ids(tokenizer.tokenize(out_text)))
+        with lock:
+            results.append((input_tokens, output_tokens, (t2 - t1) * 1000))
+        return
     with lock:
         global word_idx
         data_tmp = copy.deepcopy(data)
@@ -60,7 +79,9 @@ def send_request(results, lock):
         if word_idx % (session_num // 5) == 0:
             print(f"word_idx: {word_idx}")
         word_idx %= session_num
-    response = requests.post(url, headers=headers, json=data_tmp)
+    t1 = time.time()
+    response = session.post(url, headers=headers, json=data_tmp)
+    t2 = time.time()
     response_json = response.json()
     prompt = data_tmp["messages"][0]["content"]
     out_text = response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -68,9 +89,9 @@ def send_request(results, lock):
     input_tokens = response_json.get("usage", {}).get("prompt_tokens", 0)
     output_tokens = len(tokenizer.convert_tokens_to_ids(tokenizer.tokenize(out_text)))
     assert output_tokens == response_json.get("usage", {}).get("completion_tokens", 0)
-    t2 = time.time()
     # print(f"request time: {(t2 - t1) * 1000:.2f} ms, input_tokens_num: {input_tokens}, "
-    #       f"output_tokens_num: {output_tokens}, TPOT: {(t2 - t1) * 1000 / output_tokens:.2f} ms")
+    #       f"output_tokens_num: {output_tokens}, TPOT: {(t2 - t1) * 1000 / output_tokens:.2f} ms, "
+    #       f"服务器处理时间: {response.elapsed.total_seconds() * 1000:.2f} ms")
     with lock:
         results.append((input_tokens, output_tokens, (t2 - t1) * 1000))
 
