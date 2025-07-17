@@ -126,11 +126,17 @@ class Accuracy:
         input_ids = self.tokenizer(text)["input_ids"]
         tokens = self.tokenizer.convert_ids_to_tokens(input_ids)
         words = []
+        convert_tokens = []
         for token in tokens:
-            text = self.tokenizer.convert_tokens_to_string([token])
-            words.append(text)
-        # print(input_ids)
-        # print(words)
+            convert_tokens.append(token)
+            text = self.tokenizer.convert_tokens_to_string(convert_tokens)
+            if "�" in text:
+                continue
+            else:
+                words.append(text)
+                convert_tokens = []
+        # print(len(input_ids), input_ids)
+        # print(len(words), words)
         return words
 
     def accuracy(self, prompt, enable_chat_template=True):
