@@ -5,16 +5,26 @@ import threading
 import numpy as np
 import random
 import copy
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=str, default="/root/models/Qwen2-7B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen2-7B-Instruct")
+    parser.add_argument("--max_tokens", type=int, default=15)
+    parser.add_argument("--is_tensorrt_llm", type=bool, default=True)
+    parser.add_argument("--input_tokens", type=int, default=605)
+    parser.add_argument("--session_num", type=int, default=20000)
+    parser.add_argument("--port", type=int, default=8010)
+    return parser.parse_args()
 
 class Throughput:
-    def __init__(self, model_path, model_name, max_tokens, is_tensorrt_llm, session_num=20000):
-        self.model_path = model_path
-        self.model_name = model_name
+    def __init__(self, model_path, model_name, max_tokens, is_tensorrt_llm, input_tokens, session_num, port):
         self.max_tokens = max_tokens
         self.is_tensorrt_llm = is_tensorrt_llm
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.words = []
-        for i in range(20992):
+        for _ in range(20992):
             self.words.append(self.generate_unique_chinese())
         self.word_idx = 0
         self.session = requests.Session()
@@ -22,16 +32,16 @@ class Throughput:
             "Content-Type": "application/json"
         }
         if is_tensorrt_llm:
-            self.url = "http://localhost:8000/v2/models/tensorrt_llm_bls/generate"
+            self.url = f"http://localhost:{port}/v2/models/tensorrt_llm_bls/generate"
             self.data = {
-                "text_input": "如何复现deepseek r1中的知识蒸馏" * 55,
+                "text_input": "如何复现deepseek r1中的知识蒸馏" * (input_tokens // 11),
                 "max_tokens": max_tokens
             }
         else:
-            self.url = "http://localhost:8010/v1/chat/completions"
+            self.url = f"http://localhost:{port}/v1/chat/completions"
             self.data = {
                 "model": model_name,
-                "messages": [{"role": "user", "content": "如何复现deepseek r1中的知识蒸馏" * 22}],
+                "messages": [{"role": "user", "content": "如何复现deepseek r1中的知识蒸馏" * (input_tokens // 11)}],
                 "max_tokens": max_tokens
             }
 
@@ -116,13 +126,16 @@ class Throughput:
     def test_diff_concurrency(self):
         concurrency_levels = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
         duration = 5
+        # warmup
+        self.test_concurrency(1, 1)
+
         for level in concurrency_levels:
             t1 = time.time()
             input_tokens, output_tokens, rt = self.test_concurrency(level, duration)
             t2 = time.time()
             print(f"concurrency: {level}, cost time: {t2 - t1:.2f} s, "
                   f"RT: {rt:.2f} ms, "
-                  f"QPS: {sum(output_tokens) / max_tokens / (t2 - t1):.2f}, "
+                  f"QPS: {sum(output_tokens) / self.max_tokens / (t2 - t1):.2f}, "
                   f"avg input tokens: {int(np.mean(input_tokens))}, "
                   f"avg output tokens: {int(np.mean(output_tokens))}")
 
@@ -132,9 +145,6 @@ class Throughput:
         return results
 
 if __name__ == "__main__":
-    model_path = "/root/models/Qwen2-7B-Instruct"
-    model_name = "Qwen2-7B-Instruct"
-    max_tokens = 6
-    is_tensorrt_llm = False
-    throughput = Throughput(model_path, model_name, max_tokens, is_tensorrt_llm)
+    args = parse_args()
+    throughput = Throughput(args.model_path, args.model_name, args.max_tokens, args.is_tensorrt_llm, args.input_tokens, args.session_num, args.port)
     throughput.test_diff_concurrency()
