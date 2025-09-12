@@ -104,7 +104,8 @@ class Accuracy:
 
     def test_chat(self, prompt, num_samples=10):
         for _ in range(num_samples):
-            out_text_hf = self.hf_generate(prompt)
+            input_text = self.apply_chat_template(prompt)
+            out_text_hf = self.hf_generate(input_text)
             print(out_text_hf)
         print("--------------------------------------------------------------------")
         for _ in range(num_samples):
@@ -117,10 +118,11 @@ class Accuracy:
         text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         return text
 
-    def test_chat2(self, prompt):
-        text = self.apply_chat_template(prompt)
-        out_text_vllm = self.send_request_completions(text)
-        print(out_text_vllm)
+    def test_completions(self, prompt):
+        out_text_hf = self.hf_generate(prompt)
+        print("  hf:", out_text_hf)
+        out_text_vllm = self.send_request_completions(prompt)
+        print("vllm:",out_text_vllm)
 
     def split_text(self, text):
         input_ids = self.tokenizer(text)["input_ids"]
@@ -178,17 +180,17 @@ if __name__ == "__main__":
     model_path = "/root/models/Qwen2-7B-Instruct"
     device = "cuda:5"
     init_hf = True
-    is_tensorrt_llm = False
+    is_tensorrt_llm = True
     dtype_hf = "float16"
     accuracy_tester = Accuracy(model_path, device, init_hf, is_tensorrt_llm, dtype_hf)
     prompt = "如何复现deepseek r1中的知识蒸馏"
 
     texts = accuracy_tester.get_texts("/root/repo/soul-llm-evaluate/examples/westworld/npc_test_200.json", "context")
     # texts = accuracy_tester.get_texts("/root/repo/soul-llm-evaluate/examples/qwen2_200.json", "message")
-    # prompt = texts[0]
-    # accuracy_tester.test_chat2(prompt)
-    # accuracy_tester.test_chat(prompt, 1)
+    # accuracy_tester.test_completions(prompt)
+    accuracy_tester.test_chat(prompt, 1)
 
+    '''
     hits = []
     misses = []
     enable_chat_template = True
@@ -199,5 +201,6 @@ if __name__ == "__main__":
     print("Total Hits:", sum(hits))
     print("Total Misses:", sum(misses))
     print(f"Accuracy: {sum(hits) / (sum(hits) + sum(misses)):.4f}")
+    '''
 
 # vllm serve /root/models/Qwen2-7B-Instruct --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16

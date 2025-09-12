@@ -72,3 +72,41 @@ concurrency: 32, cost time: 10.53 s, RT: 10173.31 ms, QPS: 3.04, avg input token
 总结：
 对于长输入、长输出的吞吐不符合期望，应该小于8000ms，但是实际大于8000ms。
 访存瓶颈，加大并发，延迟应该增长缓慢，但是实际不是这样的。
+
+
+offline inference
+step 0 took 7.04 ms
+step 1 took 27.28 ms
+step 2 took 28.60 ms
+step 3 took 26.87 ms
+step 4 took 52.05 ms
+step 5 took 30.15 ms
+step 6 took 30.23 ms
+step 7 took 30.59 ms
+step 8 took 30.73 ms
+step 9 took 30.37 ms
+step 10 took 18.78 ms
+step 11 took 18.69 ms
+step 12 took 18.67 ms
+step 13 took 18.86 ms
+total 371ms
+
+step 0 took 232.79 ms
+step 1 took 20.63 ms
+step 2 took 19.94 ms
+step 3 took 19.82 ms
+step 4 took 20.14 ms
+total 316ms
+
+step 0 took 118.10 ms
+step 1 took 18.93 ms
+step 2 took 18.81 ms
+step 3 took 18.78 ms
+step 4 took 18.93 ms
+total 195ms
+
+chunked prefill 140ms
+
+总结：
+首token延迟变大，
+

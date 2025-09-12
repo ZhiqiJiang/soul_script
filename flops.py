@@ -1,7 +1,7 @@
 import torch
 from torch.utils import benchmark
 import torch.nn.functional as F
-torch.backends.cuda.matmul.allow_fp16_accumulation = True
+# torch.backends.cuda.matmul.allow_fp16_accumulation = True
 typ = torch.float16
 m = 600
 k = 3584

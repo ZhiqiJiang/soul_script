@@ -3,8 +3,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
 # 加载模型和tokenizer
-model = AutoModelForCausalLM.from_pretrained("/root/dynamo/Qwen2-7B-Instruct")
-tokenizer = AutoTokenizer.from_pretrained("/root/dynamo/Qwen2-7B-Instruct")
+model = AutoModelForCausalLM.from_pretrained("/root/models/Qwen2-7B-Instruct")
+tokenizer = AutoTokenizer.from_pretrained("/root/models/Qwen2-7B-Instruct")
 model.eval()
 
 # 正确的输入构造函数
@@ -15,7 +15,7 @@ def input_constructor(batch_size, seq_length):
                        padding='max_length', 
                        max_length=seq_length, 
                        return_tensors="pt")
-    print(f"Input IDs shape: {inputs['input_ids'].shape}")
+    # print(f"Input IDs shape: {inputs['input_ids'].shape}")
     return inputs['input_ids']
 
 # 计算FLOPs
