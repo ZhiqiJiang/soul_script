@@ -64,6 +64,26 @@ class Throughput:
                     "prompt": "如何复现deepseek r1中的知识蒸馏" * (input_tokens // 11),
                     "max_tokens": max_tokens,
                 }
+            elif self.mode == "mmodal":
+                def get_prompt_embeds():
+                    import io
+                    import base64
+                    prompt_embeds = torch.load("/root/repo/newest/vllm/prompt_embeds.pt")
+                    prompt_embeds = prompt_embeds.repeat(64, 1)
+                    buffer = io.BytesIO()
+                    torch.save(prompt_embeds, buffer)
+                    buffer.seek(0)
+                    binary_data = buffer.read()
+                    encoded_embeds = base64.b64encode(binary_data).decode("utf-8")
+                    return encoded_embeds
+                prompt_embeds = get_prompt_embeds()
+                self.url = f"http://localhost:{port}/v1/completions"
+                self.data = {
+                    "model": model_name,
+                    "prompt": "如何复现deepseek r1中的知识蒸馏" * (input_tokens // 11),
+                    "prompt_embeds": prompt_embeds,
+                    "max_tokens": max_tokens,
+                }
             elif self.mode == "openai":
                 from openai import OpenAI
                 self.client = OpenAI(
@@ -347,3 +367,4 @@ if __name__ == "__main__":
     throughput.test_diff_concurrency([1, 2, 4, 8, 16, 32, 64], 5)
 
 # python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010
+# python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --mode mmodal
