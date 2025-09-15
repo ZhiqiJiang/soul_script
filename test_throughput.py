@@ -18,6 +18,7 @@ def parse_args():
     parser.add_argument("--session_num", type=int, default=20000)
     parser.add_argument("--port", type=int, default=8010)
     parser.add_argument("--mode", type=str, default="chat")
+    parser.add_argument("--prefix_cache_hit_rate", type=float, default=0.0)
     return parser.parse_args()
 
 def diff(predict, target):
@@ -29,7 +30,7 @@ def diff(predict, target):
     return l2_relative_error, rmse, rms, similarity
 
 class Throughput:
-    def __init__(self, model_path, model_name, max_tokens, is_tensorrt_llm, input_tokens, session_num, port, mode):
+    def __init__(self, model_path, model_name, max_tokens, is_tensorrt_llm, input_tokens, session_num, port, mode, prefix_cache_hit_rate):
         self.max_tokens = max_tokens
         self.is_tensorrt_llm = is_tensorrt_llm
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -113,6 +114,7 @@ class Throughput:
 
         self.lock = threading.Lock()
         self.session_num = session_num
+        self.prefix_cache_hit_rate = prefix_cache_hit_rate
 
 
 
@@ -152,7 +154,9 @@ class Throughput:
             with self.lock:
                 data_tmp = copy.deepcopy(self.data)
                 if self.mode == "chat":
-                    data_tmp["messages"][0]["content"] = self.words[self.word_idx] + self.data["messages"][0]["content"]
+                    text_len = len(data_tmp["messages"][0]["content"])
+                    pos = int(text_len * self.prefix_cache_hit_rate)
+                    data_tmp["messages"][0]["content"] = data_tmp["messages"][0]["content"][:pos] + self.words[self.word_idx] + data_tmp["messages"][0]["content"][pos:]
                 elif self.mode == "completion":
                     data_tmp["prompt"] = self.words[self.word_idx] + self.data["prompt"]
                 self.word_idx += 1
@@ -357,7 +361,7 @@ class Throughput:
 
 if __name__ == "__main__":
     args = parse_args()
-    throughput = Throughput(args.model_path, args.model_name, args.max_tokens, args.is_tensorrt_llm, args.input_tokens, args.session_num, args.port, args.mode)
+    throughput = Throughput(args.model_path, args.model_name, args.max_tokens, args.is_tensorrt_llm, args.input_tokens, args.session_num, args.port, args.mode, args.prefix_cache_hit_rate)
     # throughput.test_audio()
     # throughput.test_embedding()
     # throughput.test_audio_diff_concurrency()
@@ -367,4 +371,7 @@ if __name__ == "__main__":
     throughput.test_diff_concurrency([1, 2, 4, 8, 16, 32, 64], 5)
 
 # python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010
+# python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --prefix_cache_hit_rate 0.5
+# python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --mode completion
 # python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --mode mmodal
+# python test_throughput.py --model_path /root/models/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token --model_name Qwen2-7B-Instruct --max_tokens 15 --input_tokens 605 --port 8010 --mode completion

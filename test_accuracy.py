@@ -162,6 +162,17 @@ class Accuracy:
         print("words_vllm:", words_vllm)
         return hit, miss
 
+    def accuracy_all(self, texts, enable_chat_template=True):
+        hits = []
+        misses = []
+        for prompt in texts:
+            hit, miss = self.accuracy(prompt, enable_chat_template)
+            hits.append(hit)
+            misses.append(miss)
+        print("Total Hits:", sum(hits))
+        print("Total Misses:", sum(misses))
+        print(f"Accuracy: {sum(hits) / (sum(hits) + sum(misses)):.4f}")
+
     def get_texts(self, json_path, text_key='context'):
         import json
         texts = []
@@ -180,7 +191,7 @@ if __name__ == "__main__":
     model_path = "/root/models/Qwen2-7B-Instruct"
     device = "cuda:5"
     init_hf = True
-    is_tensorrt_llm = True
+    is_tensorrt_llm = False
     dtype_hf = "float16"
     accuracy_tester = Accuracy(model_path, device, init_hf, is_tensorrt_llm, dtype_hf)
     prompt = "如何复现deepseek r1中的知识蒸馏"
@@ -188,19 +199,10 @@ if __name__ == "__main__":
     texts = accuracy_tester.get_texts("/root/repo/soul-llm-evaluate/examples/westworld/npc_test_200.json", "context")
     # texts = accuracy_tester.get_texts("/root/repo/soul-llm-evaluate/examples/qwen2_200.json", "message")
     # accuracy_tester.test_completions(prompt)
-    accuracy_tester.test_chat(prompt, 1)
+    # accuracy_tester.test_chat(prompt, 1)
+    accuracy_tester.accuracy_all(texts[:20], enable_chat_template=True)
 
-    '''
-    hits = []
-    misses = []
-    enable_chat_template = True
-    for prompt in texts:
-        hit, miss = accuracy_tester.accuracy(prompt, enable_chat_template)
-        hits.append(hit)
-        misses.append(miss)
-    print("Total Hits:", sum(hits))
-    print("Total Misses:", sum(misses))
-    print(f"Accuracy: {sum(hits) / (sum(hits) + sum(misses)):.4f}")
-    '''
 
 # vllm serve /root/models/Qwen2-7B-Instruct --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16
+# vllm serve /root/models/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010
+# vllm serve /root/repo/TensorRT-Model-Optimizer/examples/llm_ptq/Qwen2-7B-Instruct-FP8 --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010
