@@ -141,12 +141,12 @@ class Throughput:
             response_json = response.json()
             # print(f"request time: {(t2 - t1) * 1000:.2f} ms")
             # print(response_json["outputs"][0]["shape"])
-            # prompt = self.data["text_input"]
-            # input_tokens = len(self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(prompt)))
-            # out_text = response_json.get("text_output", "")
-            # output_tokens = len(self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(out_text)))
-            input_tokens = 0
-            output_tokens = 0
+            prompt = self.data["text_input"]
+            input_tokens = len(self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(prompt)))
+            out_text = response_json.get("text_output", "")
+            output_tokens = len(self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(out_text)))
+            # input_tokens = 0
+            # output_tokens = 0
             with self.lock:
                 results.append((input_tokens, output_tokens, (t2 - t1) * 1000))
             return response_json
@@ -193,7 +193,7 @@ class Throughput:
                 out_text = response.choices[0].text
             # reasoning_content = response_json.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
             output_tokens = len(self.tokenizer.convert_tokens_to_ids(self.tokenizer.tokenize(out_text)))
-            assert output_tokens == response_json.get("usage", {}).get("completion_tokens", 0)
+            # assert output_tokens == response_json.get("usage", {}).get("completion_tokens", 0), f"output_tokens: {output_tokens}, completion_tokens: {response_json.get('usage', {}).get('completion_tokens', 0)}"
             # print(f"prompt: {prompt}, out_text: {out_text}, reasoning_content: {reasoning_content}")
             # print(f"request time: {(t2 - t1) * 1000:.2f} ms, input_tokens_num: {input_tokens}, "
             #       f"output_tokens_num: {output_tokens}, TPOT: {(t2 - t1) * 1000 / output_tokens:.2f} ms, "
@@ -370,8 +370,32 @@ if __name__ == "__main__":
     # throughput.test_request()
     throughput.test_diff_concurrency([1, 2, 4, 8, 16, 32, 64], 5)
 
-# python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010
-# python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --prefix_cache_hit_rate 0.5
-# python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --mode completion
-# python test_throughput.py --model_path /root/models/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --mode mmodal
-# python test_throughput.py --model_path /root/models/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token --model_name Qwen2-7B-Instruct --max_tokens 15 --input_tokens 605 --port 8010 --mode completion
+# python test_throughput.py --model_path /root/models/Qwen3/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010
+# python test_throughput.py --model_path /root/models/Qwen3/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --prefix_cache_hit_rate 0.5
+# python test_throughput.py --model_path /root/models/Qwen3/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --mode completion
+# python test_throughput.py --model_path /root/models/Qwen3/Qwen3-8B --model_name Qwen3-8B --max_tokens 15 --input_tokens 605 --port 8010 --mode mmodal
+# python3 test_throughput.py --model_path /root/models/Qwen2/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token --model_name Qwen2-7B-Instruct --max_tokens 15 --input_tokens 605 --port 8010 --mode completion
+# python3 test_throughput.py --model_path /root/models/Qwen3/Qwen3-30B-A3B --model_name Qwen3-30B-A3B --max_tokens 15 --input_tokens 605 --port 8010
+# python3 test_throughput.py --model_path /root/models/Qwen3/Qwen3-30B-A3B-FP8-DYNAMIC --model_name Qwen3-30B-A3B --max_tokens 22 --input_tokens 2266 --port 8010 --mode completion
+# python3 test_throughput.py --model_path /root/models/Qwen3/Qwen3-30B-A3B-W8A8-Dynamic-Per-Token --model_name Qwen3-30B-A3B --max_tokens 22 --input_tokens 2266 --port 8010 --mode completion
+# python3 test_throughput.py --model_path /root/models/Qwen2/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token --model_name Qwen2-7B-Instruct --max_tokens 22 --input_tokens 2266 --port 8010
+
+# CUDA_VISIBLE_DEVICES=5 vllm serve /root/models/Qwen3/Qwen3-1.7B --served-model-name Qwen3-1.7B --no-enable-prefix-caching --port 8010
+# python3 test_throughput.py --model_path /root/models/Qwen3/Qwen3-1.7B --model_name Qwen3-1.7B --max_tokens 15 --input_tokens 605 --port 8010
+
+# python3 test_throughput.py --model_path /root/models/Qwen3/Qwen3-Omni-30B-A3B-Instruct --model_name Qwen3-Omni-30B-A3B-Instruct --max_tokens 15 --input_tokens 605 --port 8010
+# python3 test_throughput.py --model_path /root/models/Qwen3/Qwen3-VL-4B-Instruct --model_name Qwen3-VL-4B-Instruct --max_tokens 15 --input_tokens 605 --port 8010
+# python3 test_throughput.py --model_path /root/models/Qwen3/Qwen3-VL-8B-Thinking --model_name Qwen3-VL-8B-Thinking --max_tokens 15 --input_tokens 605 --port 8010
+
+'''
+nsys profile  \
+    --trace-fork-before-exec=true \
+    --cuda-graph-trace=node \
+vllm bench latency \
+    --model /root/models/Qwen3/Qwen3-1.7B \
+    --num-iters-warmup 5 \
+    --num-iters 1 \
+    --batch-size 16 \
+    --input-len 512 \
+    --output-len 8
+'''

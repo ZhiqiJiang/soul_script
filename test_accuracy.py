@@ -13,7 +13,7 @@ class Accuracy:
         self.device = device
         if init_hf:
             self.model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=dtype_hf,
-                                                              device_map=None).to(device)
+                                                              device_map="auto")
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         self.is_tensorrt_llm = is_tensorrt_llm
 
@@ -23,7 +23,7 @@ class Accuracy:
             max_new_tokens=max_tokens, repetition_penalty=1.0,
             early_stopping=False, do_sample=True, num_beams=1, top_p=1, pad_token_id=0, eos_token_id=2
         )
-        model_inputs = self.tokenizer([prompt], return_tensors="pt").to(self.device)
+        model_inputs = self.tokenizer([prompt], return_tensors="pt").to(self.model.device)
         generated_ids = self.model.generate(model_inputs.input_ids, generation_config=generation_config)
         generated_ids = [
             output_ids[len(input_ids):] for input_ids, output_ids in zip(model_inputs.input_ids, generated_ids)
@@ -45,7 +45,7 @@ class Accuracy:
         return out_text
     
     def request_vllm_completions(self, prompt, max_tokens=20):
-        model_name = "Qwen2-7B-Instruct"
+        model_name = os.path.basename(self.model_path)
         data = {
             "model": model_name,
             "prompt": prompt,
@@ -57,6 +57,7 @@ class Accuracy:
             "repetition_penalty": 1.0
         }
         url = "http://localhost:8010/v1/completions"
+        # url = "http://gw-suzc8m78tszqt2jedy-vpc.cn-hangzhou.pai-eas.aliyuncs.com/api/predict/jiangzhiqi_5090/v1/completions"
         headers = {"Content-Type": "application/json"}
         response = requests.post(url, headers=headers, json=data)
         response_json = response.json()
@@ -64,7 +65,7 @@ class Accuracy:
         return out_text
     
     def request_vllm_chat(self, prompt, max_tokens=20):
-        model_name = "Qwen2-7B-Instruct"
+        model_name = os.path.basename(self.model_path)
         data = {
             "model": model_name,
             "messages": [{
@@ -79,6 +80,7 @@ class Accuracy:
             "repetition_penalty": 1.0
         }
         url = "http://localhost:8010/v1/chat/completions"
+        # url = "http://gw-suzc8m78tszqt2jedy-vpc.cn-hangzhou.pai-eas.aliyuncs.com/api/predict/jiangzhiqi_5090/v1/chat/completions"
         headers = {"Content-Type": "application/json"}
         response = requests.post(url, headers=headers, json=data)
         response_json = response.json()
@@ -188,8 +190,9 @@ class Accuracy:
 
 
 if __name__ == "__main__":
-    model_path = "/root/models/Qwen2-7B-Instruct"
-    device = "cuda:5"
+    model_path = "/root/models/Qwen3/Qwen3-30B-A3B"
+    model_path = "/root/models/Llama3/Meta-Llama-3-8B-Instruct"
+    device = "cuda:4"
     init_hf = True
     is_tensorrt_llm = False
     dtype_hf = "float16"
@@ -197,12 +200,30 @@ if __name__ == "__main__":
     prompt = "如何复现deepseek r1中的知识蒸馏"
 
     texts = accuracy_tester.get_texts("/root/repo/soul-llm-evaluate/examples/westworld/npc_test_200.json", "context")
+    # texts = accuracy_tester.get_texts("szfs_prompts.json", "prompt")
     # texts = accuracy_tester.get_texts("/root/repo/soul-llm-evaluate/examples/qwen2_200.json", "message")
     # accuracy_tester.test_completions(prompt)
     # accuracy_tester.test_chat(prompt, 1)
-    accuracy_tester.accuracy_all(texts[:20], enable_chat_template=True)
+    accuracy_tester.accuracy_all(texts[:20], enable_chat_template=False)
 
 
-# vllm serve /root/models/Qwen2-7B-Instruct --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16
-# vllm serve /root/models/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010
+# vllm serve /root/models/Qwen2/Qwen2-7B-Instruct --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16
+# vllm serve /root/models/Qwen2/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --gpu-memory-utilization 0.5
 # vllm serve /root/repo/TensorRT-Model-Optimizer/examples/llm_ptq/Qwen2-7B-Instruct-FP8 --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010
+# vllm serve /root/models/business/quantize_loss/quant_model --served-model-name hf_model --no-enable-prefix-caching --port 8010 --dtype float16
+# vllm serve /root/models/Qwen2/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token_custom_dataset --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16
+# vllm serve /root/models/Qwen3/Qwen3-30B-A3B-W8A8-Dynamic-Per-Token --served-model-name Qwen3-30B-A3B --no-enable-prefix-caching --port 8010 --dtype float16
+
+''' 5090
+vllm serve /models/Qwen2-7B-Instruct-NVFP4_2 --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.3
+vllm serve /models/Qwen2-7B-Instruct-NVFP4A16 --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.3
+vllm serve /models/Qwen2-7B-Instruct-W8A8-Dynamic-Per-Token --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+vllm serve /models/Qwen2-7B-Instruct-FP8-BLOCK --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+vllm serve /models/Qwen2-7B-Instruct-FP8-DYNAMIC --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+vllm serve /models/Qwen2-7B-Instruct-NVFP4-FP8-Dynamic --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+vllm serve /models/Qwen2-7B-Instruct2of4-sparse --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+vllm serve /root/models/Qwen2/Qwen2-7B-Instruct-awq-asym --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+vllm serve /models/Qwen2-7B-Instruct-W4A16-G128 --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+vllm serve /models/Qwen2-7B-Instruct-W4A16-G128_custom_dataset --served-model-name Qwen2-7B-Instruct --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+vllm serve /models/Qwen3-30B-A3B-FP8-DYNAMIC --served-model-name Qwen3-30B-A3B --no-enable-prefix-caching --port 8010 --dtype float16 --gpu-memory-utilization 0.4
+'''
