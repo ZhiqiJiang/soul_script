@@ -418,3 +418,232 @@ A2 上一个 Cube 配两个 Vector。分开跑时，matmul kernel 期间 Vector 
 2. 再看 `aic_mac_ratio` / `aiv_vec_ratio` / `aic_mte*_ratio` 的最大值（干活时最忙流水有多满）——定位瓶颈流水。
 3. 若瓶颈在 FIX 或 MTE3，优先考虑 L0C 双缓冲、unit flag，以及把能随路做的 epilogue 塞进 Fixpipe。
 
+---
+
+# 昇腾算子性能采集：上板指标、指令流水仿真与 MC2
+
+> 环境：本机 CANN 8.5.2，Ascend 910（`npu-smi` 的 NPU Name 为 9362，仿真器目录 `Ascend910_9362`）。下面引用的手册是商用版 8.5.0。
+> 对象：Catlass 直调 GEMM（`examples/90_probe_qkv`，`M=2266, N=4608, K=3584`，fp16），以及 MC2 / LCCL 的通算流水。
+> 标注约定：未写出来源的数字和日志是本机实测；手册结论写在对应句后。
+
+## 结论速览
+
+| 想看的东西 | 用什么 | 覆盖范围 |
+|---|---|---|
+| Cube / Vector / MTE 占比、带宽、L2、Roofline | 上板 `msprof op` 的 PMU 指标 | 本机实测：Catlass `<<<>>>` 直调和 aclnn 算子都能采 |
+| 逐指令流水、指令对应源码行 | CAModel。入口有两个：`msprof op --aic-metrics=TimelineDetail`（真机 dump 后再重放），或 `msprof op simulator`（一开始就在仿真器里跑） | 单卡计算 kernel。直调 kernel 走不通 TimelineDetail，须按 `--simulator` 链接 `runtime_camodel` |
+| 计算与通信的掩盖、通信轮次、kernel 内集合通信 | 上板 `msprof op` 的通算流水图 | MC2、LCCL。见第 3 节引用的手册 |
+
+逐指令日志来自 CAModel 重放，过程是本机日志，手册旁证见第 1.1 节。PMU 给出的是流水累计占比。仿真排除 MC2 和 HCCL、上板 `TimelineDetail` 排除「通算融合类算子」，这两句原文不同，见第 3 节。通算流水图的泳道也见第 3 节。
+
+---
+
+## 1. 上板 PMU 与 TimelineDetail
+
+`msprof op` 的 PMU 指标在 Catlass 直调 kernel 上可用。对 `90_probe_qkv 0 12 2 0` 采集 `PipeUtilization,Memory,MemoryL0,L2Cache,Roofline`，各项均落盘，Roofline 结论是 compute bound，MTE1 / MTE2 / MTE3 活跃时带宽利用率低于 80%。单次 kernel 约 321 µs，block dim 20。
+
+`--aic-metrics=TimelineDetail --dump=on` 在同一个二进制上失败，报错是：
+
+```text
+[ERROR] <Save> Kernel context save failed, dump kernel args failed
+[WARN]  TimelineDetail data collection failed
+```
+
+打开 `INJ_LOG_LEVEL=0` 后，`libmsopprof_injection.so` 给出原因：
+
+```text
+[DEBUG] <DumpKernelArgs> empty kernel args in argsInfo.
+```
+
+Catlass 的 `DeviceGemm::Run` 用毕昇 `<<<>>>` 下发，落到 `rtKernelLaunch`。参数是 `Kernel::Params` 按值传递的 112 字节 POD（`argsInfo argsSize: 112`），里面没有 GM 地址、buffer 长度和 tiling 偏移的描述。没有 `argsInfo`，就存不下输入，`simulator/` 为空。板上的 `DeviceProf*.bin` 和 `OpBasicInfo.csv` 仍然是真实数据，失败的只是「存参数 → 仿真重放」这一段。
+
+内置 MatMul 走 aclnn，下发是 `aclrtLaunchKernelWithHostArgs` / `aclrtLaunchKernelWithConfig`，带完整 `argsInfo`。同样的 TimelineDetail 命令能写出 `input_*.bin`、`input_tiling.bin`、`kernel_config.bin`，并重放出 `coreN.cubecore0.instr_log.dump`。
+
+因此直调 kernel 的指令流水改走下一节的仿真模式，不走上板 TimelineDetail。
+
+### 1.1 上板 TimelineDetail 的指令流水仍是 CAModel 重放
+
+`TimelineDetail` 分两段，只有第一段在真机上。
+
+1. 真机跑 kernel，采 PMU。`DeviceProf*.bin` 和 `OpBasicInfo.csv` 里的墙上时间来自这里。内置 MatMul 那次的 340 µs 是这段的结果。
+2. msopt 把 kernel 二进制、参数和输入 dump 下来，把 runtime 指到仿真器上再跑一遍，生成逐指令日志。
+
+内置 MatMul 采集时的日志：
+
+```text
+[DEBUG] <RuntimeToTargetLib> Symbol link runtime to simulator success
+[ERROR] scalar_pv.cc:292 exec_div error div instr, pc: 288620080
+```
+
+`scalar_pv.cc` 是 CAModel 的标量模型。`coreN.cubecore0.instr_log.dump` 来自这次重放。上面两段是本机日志，手册没有写「先上板再重放」这句过程。[工具概述](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0082.html) 只提供了旁证：`--aic-metrics=TimelineDetail` 的说明是「若要使能此功能，需要参考msprof op simulator配置进行配置」；同页 `--dump` 写「控制仿真器 dump 文件是否生成」，且「此参数仅在使用 `--aic-metrics=TimelineDetail` 选项时有效」；`--core-id` 写「解析部分核的仿真数据」，同样只在 TimelineDetail 下生效。
+
+两条命令的差别只在 kernel 怎么进仿真器：
+
+| 命令 | 真机做什么 | 指令流水从哪来 |
+|---|---|---|
+| `msprof op --aic-metrics=TimelineDetail` | 真机跑一遍，记下真实耗时，并 dump 输入和二进制 | CAModel 按这份 dump 重放 |
+| `msprof op simulator` | 不在真机上执行这个 kernel | 进程一开始就链 `runtime_camodel`，整段在 CAModel 里跑 |
+
+逐指令流水（每条 `MMAD`、`LOAD_2D` 的 cycle、PC、pipe）只有 CAModel 能给。芯片上的 PMU 给的是一段时间内各流水的累计占比，也就是 `PipeUtilization`、`Memory`、`aic_mac_ratio`，没有每条指令的时间线。
+
+通算流水图是另一类时间线。[采集 MC2 算子的性能数据](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0140.html) 要求编译时加 `-DASCENDC_TIME_STAMP_ON`，用途写成「使能 MC2 算子的 AIC 打点和代码行映射」。泳道粒度见第 3 节引用的通算流水图表 1，不是逐指令。
+
+---
+
+## 2. `msprof op simulator`
+
+仿真模式把算子直接放进 CAModel 跑，解析每条指令的流水。它和上一节 TimelineDetail 的第二段一样产出指令轨迹；差别是进程从启动起就链 `runtime_camodel`，这一点来自本机日志，不是手册原文。[工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) 表 1 对仿真结果的说明是：「资料中的 msprof op simulator 的仿真结果仅供参考，算子真实的运行情况以用户的实际仿真数据为准。」这句没有说墙上时间要改看上板 PMU。上板耗时是第 1 节的实测，和这句无关。
+
+### 2.1 准备
+
+1. 用仿真库编译，链接 `runtime_camodel`。Catlass 仓库内的步骤在 `docs/tools/performance_tools.md` 的「性能流水仿真」；[使用前准备](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0083.html) 给出的模板库命令是 `bash scripts/build.sh --simulator 00_basic_matmul`，并注明该场景适用于 Atlas A2 训练 / 推理系列产品。
+   ```bash
+    bash scripts/build.sh --simulator 90_probe_qkv
+   ```
+
+    `build.sh` 里的 `--simulator` 会读 `npu-smi` 的 Chip Name。这台机器 Chip Name 是短名 `Ascend910`，仿真器目录是全名 `Ascend910_9362`（Chip Name 加 NPU Name）。对不上时显式指定：
+
+    仿真构建使用独立的 `build_sim/`、`output_sim/`，避免覆盖真机二进制。
+2. 代码行映射需要设备侧 `-g`，并保持 `-O2`。[使用前准备](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0083.html) 写明编译须加 `-g` 才有代码热点图和调用栈，并写明「当前 msProf 不支持 `-O0` 编译选项」。Catlass 样例的写法：
+   ```cmake
+    target_compile_options(90_probe_qkv PRIVATE
+        "SHELL:$<$<COMPILE_LANGUAGE:ASCEND>:-Xaicore-start -g -Xaicore-end>")
+   ```
+
+    不加 `-g` 时流水图仍会生成，日志是 `Kernel missed debug_line information`，`*_code_exe.csv` 没有源码行。
+3. 只支持单卡，代码里的 device id 必须是 0。[使用前准备](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0083.html) 的原文是：「msProf 工具的仿真功能仅支持单卡场景，无法仿真多卡场景，代码中也只能设置 0 卡。若修改可见卡号，则会导致仿真失败。」[工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) 另有一句：「用户设置的仿真核数不能超过物理核数。」
+4. CAModel 下 `PlatformAscendCManager::GetInstance()` 返回空指针。样例里直接调用 `GetCoreNumAic()` 会段错误（官方 `00_basic_matmul` 同样崩在 `platform_ascendc.cpp` 的 “PlatformInfo cannot be initialized”）。进仿真前要自己给定 AIC 核数，绕开这次平台查询。
+5. 全尺寸 `2266×4608×3584` 在 CAModel 上不现实。一个 L1 tile（`128×256`）跑满真实 `K=3584`、单核，约 1 分钟，MTE2 / MTE1 / CUBE 的流水在这个 tile 里已经完整。
+
+### 2.2 命令
+
+可执行文件模式用 `--soc-version` 选仿真器，程序参数跟在二进制后面：
+
+```bash
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/tools/simulator/Ascend910_9362/lib:$LD_LIBRARY_PATH
+
+msprof op simulator \
+  --soc-version=Ascend910_9362 \
+  --output=./timeline \
+  ./90_probe_qkv 0 1 1 0
+```
+
+多个 kernel 时按名前缀筛选，`|` 分隔，条数由 `--launch-count` 决定：
+
+```bash
+msprof op simulator \
+  --soc-version=Ascend910_9362 \
+  --launch-count=10 \
+  --kernel-name="Add|Sub" \
+  --output=./output_data \
+  ./test
+```
+
+另一种输入是算子 `.o` 加 json。[工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) 写明 `--config` 场景不支持 `--soc-version`，仿真库只能从 `LD_LIBRARY_PATH` 进来：
+
+```bash
+export LD_LIBRARY_PATH=${ASCEND_HOME_PATH}/tools/simulator/Ascend910_9362/lib:$LD_LIBRARY_PATH
+msprof op simulator --config=./add_test.json --output=./output_data
+```
+
+本机 `msprof op simulator --help` 的参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--soc-version` | 仿真器型号。只对可执行文件模式生效 |
+| `--application` | 可执行文件路径。本机帮助写该选项将废弃；[工具概述](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0082.html) 表 3 写「当前与 `./app [arguments]` 兼容，后期将修改为 `./app [arguments]`」 |
+| `--config` | 算子 `.o` 的 json，和可执行文件二选一 |
+| `--output` | 结果目录，默认当前目录 |
+| `--kernel-name` | 名前缀匹配，不指定就只采第一个被调度的 kernel |
+| `--launch-count` | 最多采集多少个 kernel，1–5000 |
+| `--core-id` | 只解析指定核 |
+| `--aic-metrics` | `PipeUtilization`、`ResourceConflictRatio`、`PMSampling`。后两项要和 `PipeUtilization` 一起开 |
+| `--mstx` / `--mstx-include` | mstx 打点及采集区间，默认关 |
+| `--timeout` | 程序超时，单位分钟，1–2880 |
+| `--export` | 对已有 dump 重新解析 |
+| `--dump` | dump 落盘开关，只对 A2 / A3 生效 |
+
+只看 kernel 里一段时，在单核代码里加 `TRACE_START` / `TRACE_STOP`，并编译定义 `-DASCENDC_TRACE_ON`。[指令流水图](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0087.html) 写明：这用于 A3、Atlas 推理系列和 A2，「然后才能生成该范围内的流水图」；同一页还要求样例工程的编译配置加上 `-DASCENDC_TRACE_ON`。[工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) 有同样两句。[使用前准备](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0083.html) 的「使用约束」是对 msProf 整体的：采集时间建议 5 分钟以内，内存建议 20 GB 以上，结果不要放在含软链接的目录。这不是仿真模式专属的限制。
+
+### 2.3 产物
+
+单 kernel 的目录：
+
+```text
+OPPROF_{timestamp}_XXX
+├── dump
+└── simulator
+    ├── core0.cubecore0
+    │   ├── core0.cubecore0_instr_exe.csv
+    │   ├── core0.cubecore0_code_exe.csv
+    │   └── trace.json
+    ├── trace.json
+    └── visualize_data.bin
+```
+
+`core*.cubecore*` 是 Cube 核，`core*.veccore*` 是 Vector 核。目录结构见 [工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html)。
+
+| 文件 | 字段 / 用途 | 来源 |
+|---|---|---|
+| `*_instr_exe.csv` | `instr`、`addr`（PC）、`pipe`、`call_count`、`cycles`、`running_time(us)`、`detail` | [代码指令信息文件](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0102.html) |
+| `*_code_exe.csv` | `code`（`文件路径:行号`）、`call_count`、`cycles`、`running_time(us)` | [代码行耗时数据文件](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0101.html)。该页只定义字段，没有写 `-g`。代码行和调用栈要 `-g`，见 [使用前准备](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0083.html) |
+| `simulator/trace.json` | 全部核的指令流水。各核目录里另有单核一份 | 目录结构见 [工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) |
+| `visualize_data.bin` | 导入 Insight 后展示指令流水图、算子代码热点图、内存通路吞吐率波形图 | [工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) 第 3 步。流水字段在 [指令流水图](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0087.html) 表 1，名称是 VECTOR、SCALAR、Cube、MTE1、MTE2、MTE3、FIXP；FIXP 一行注明仅 A2 训练 / 推理系列展示 |
+
+[指令流水图](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0087.html) 写的打开方式是：把 `msprof op simulator` 生成的 `trace.json` 拖进 Chrome 的 `chrome://tracing`，或把 `trace.json` / `visualize_data.bin` 导入 MindStudio Insight。Insight 要单独安装，同一页和 [使用前准备](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0083.html) 都写了。手册没有写 Perfetto。
+
+### 2.4 cfg 0 的一块 tile
+
+`M=128, N=256, K=3584`，单核，Pingpong `128×256`、`swizzle<1,0>`。仿真时长 20.96 µs。`instr_exe.csv` 按 pipe 汇总（各指令 cycles 相加，不是墙钟）：
+
+| pipe | calls | cycles | 占比 |
+|---|---:|---:|---:|
+| MTE2 | 90 | 140600 | 40.5% |
+| MTE1 | 740 | 102975 | 29.7% |
+| SCALAR | 15945 | 62192 | 17.9% |
+| CUBE | 232 | 35828 | 10.3% |
+| ALL | 2 | 2727 | 0.8% |
+| FIXP | 4 | 2726 | 0.8% |
+
+最重的单条指令是 `MOV_OUT_TO_L1_MULTI_ND2NZ`（MTE2，38184 cycles）和 `LOAD_2D`（MTE1，38120 cycles）。这和上板 PMU 的结论一致：Cube 在干活时是满的，时间主要耗在进 L1 和 L1→L0 的搬运上。
+
+---
+
+## 3. MC2 与 LCCL：上板通算流水图
+
+仿真和上板 `TimelineDetail` 的限制，手册是两句不同的话，不能合成「都不覆盖通算融合算子」：
+
+- 仿真。[工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) 在 `msprof op simulator` 一节写：「仿真环境不支持采集 MC2 和 HCCL 类型的算子。」点名的是 MC2 和 HCCL，没有写 LCCL，也没有用「通算融合」这个词。
+- 上板 `TimelineDetail`。[工具概述](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0082.html) 对 `--aic-metrics=TimelineDetail` 的说明是：「此功能不支持采集二级指针类算子，Triton 算子及通算融合类算子。」这里没有列出 MC2、LCCL 或 HCCL。同页功能列表里，通算流水图的括号是「通算融合算子」，指令流水图是另一项。
+
+[通算流水图](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0139.html) 的首句是：「通过 msprof op 对通算融合算子进行调优后……当前仅支持 MC2 和 LCCL 类型的通算融合算子。」这句限制的是这张图的支持范围，不是 TimelineDetail 那句的定义，不能倒推成 TimelineDetail 排除的就是这两个名字。
+
+MC2 的通算流水用上板 `msprof op`，步骤只在 [采集 MC2 算子的性能数据](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0140.html)。该页示例是 Ascend CL 单算子调用，没有写 LCCL。它要求在 `op_kernel/CMakeLists.txt` 加上下面的选项，「使能 MC2 算子的 AIC 打点和代码行映射功能」，然后执行上板命令。
+
+```cmake
+add_ops_compile_options(ALL OPTIONS -DASCENDC_TIME_STAMP_ON, -g)
+```
+
+```bash
+msprof op --output=$HOME/projects/output $HOME/projects/MyApp blockdim 1
+```
+
+多卡结果按 `device0`、`device1` 分目录，每次调度一份。[工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) 在该目录示例里注明：`trace.json`「仅适用于 MC2 和 LCCL 类型通算融合算子」。
+
+泳道是 [通算流水图](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0139.html) 表 1 的原文，「支持 / 不支持」没有改写成有无：
+
+| 字段名 | 字段功能 | MC2 | LCCL |
+|---|---|---|---|
+| AI CORE | 算子在 AI CORE 上的整体运行情况 | 支持 | 支持 |
+| AI CPU | 算子在 AI CPU 上的整体运行情况 | 支持 | 不支持 |
+| TURN | 算子在 AI CPU 上不同通信轮次的流水 | 支持 | 不支持 |
+| AIC BLOCK | 各 Cube 核的整体运行情况和关键接口调用情况 | 支持 | 支持 |
+| AIV BLOCK | 各 Vector 核的整体运行情况和关键接口调用情况 | 支持 | 支持 |
+| HCCL | 通过 HCCL 通信的算子在多卡间的集合通信流水 | 支持 | 不支持 |
+| HCCL TASK | 通过 HCCL 通信的算子在多卡间的集合通信任务执行流水 | 支持 | 不支持 |
+
+同一页图 1 的说明是：展示 AI CPU 和 AI CORE 的耗时掩盖，展示 AI CPU 上不同通信轮次，展示各 BLOCK 的运行时间和关键接口调用，展示通过 HCCL 通信时的集合通信流水和任务流水。接口名单是这页后面单独的一句，不是 HCCL 泳道那一行的定义：MC2 支持调用 A2 的 AllReduce、AllGather、ReduceScatter、AlltoAll 等接口，以及 A3 的 AllGather、ReduceScatter、AlltoAllV 等接口；加 `-g` 后单击具体接口展示代码行调用栈。介绍写在「高阶 API > HCCL 通信类 > HCCL Kernel 侧接口」。
+
+[工具使用](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_00851.html) 对上板 `visualize_data.bin` 的说明是：「当前，仅支持生成 MC2 和 LCCL 类型通算融合算子的通算流水图。MC2 和 LCCL 类型通算融合算子不支持生成 Cache 热力图和算子代码热点图，且不支持 Atlas 推理系列产品。」同页上板输出目录里，这些算子的子目录同时有指标 csv 和 `trace.json`。csv 有哪些列取决于 `--aic-metrics`；[工具概述](https://www.hiascend.com/document/detail/zh/canncommercial/850/devaids/optool/atlasopdev_16_0082.html) 写默认是 Default 那一组，Roofline 要单独设 `--aic-metrics=Roofline`。同页 `--kill` 的说明：「使用该参数会造成最后一个被执行的通算融合算子无法正常获取接口调用流水。」
+
